@@ -176,7 +176,7 @@ export default function App() {
         style={styles.container}
         behavior={Platform.OS === "ios" ? "padding" : "height"}
       >
-        <StatusBar barStyle="dark-content" backgroundColor="#f8f9fa" />
+        <StatusBar barStyle="dark-content" backgroundColor="#ccd3da" />
         
         <Animated.View 
           style={[
@@ -338,7 +338,7 @@ export default function App() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: "#f8f9fa",
+    backgroundColor: "#e06925",
   },
   header: {
     backgroundColor: "#4299e1",
