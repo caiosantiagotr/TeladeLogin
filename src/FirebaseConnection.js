@@ -6,16 +6,14 @@ import { getFirestore } from 'firebase/firestore';
 
 import { initializeAuth, browserLocalPersistence,  indexedDBLocalPersistence } from 'firebase/auth';
 const firebaseConfig = {
-  apiKey: "AIzaSyBLt7O25g68gNV8KXidaQu6pg4bm4_ij48",
-  authDomain: "apptest-15232.firebaseapp.com",
-  projectId: "apptest-15232",
-  storageBucket: "apptest-15232.firebasestorage.app",
-  messagingSenderId: "750323858789",
-  appId: "1:750323858789:web:6aa5970a4ef008917c758c",
-  measurementId: "G-2G05QNZ0C4"
+  apiKey: "AIzaSyCgYvTWAKRvMAOBwshxsVjduNd2KD8hD4A",
+  authDomain: "bancodev-5ae1b.firebaseapp.com",
+  projectId: "bancodev-5ae1b",
+  storageBucket: "bancodev-5ae1b.firebasestorage.app",
+  messagingSenderId: "366456197469",
+  appId: "1:366456197469:web:adebb95170a21462e818b4",
+  measurementId: "G-BBCZRSM3XG"
 };
-
-
 const app = initializeApp(firebaseConfig);
 const db = getFirestore(app)
 
@@ -30,3 +28,6 @@ const auth = initializeAuth(app, {
 
 
 export { db, auth };
+
+
+
