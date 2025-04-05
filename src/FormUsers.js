@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { 
   View, 
   Text, 
@@ -10,11 +10,13 @@ import {
   SafeAreaView,
   StatusBar,
   KeyboardAvoidingView,
-  Platform
+  Platform,
+  Alert
 } from 'react-native';
 import { api } from './api';
 import { signOut } from 'firebase/auth';
-import { auth } from './FirebaseConnection';
+import { auth, db } from './FirebaseConnection'; // Certifique-se de importar db
+import { collection, addDoc, serverTimestamp } from 'firebase/firestore'; // Importar funções do Firestore
 import { MaterialIcons } from '@expo/vector-icons';
 
 export function FormUsers({ navigation }) {
@@ -27,56 +29,163 @@ export function FormUsers({ navigation }) {
     bairro: ""
   });
 
+  // Estado para controlar erros específicos de cada campo
+  const [fieldErrors, setFieldErrors] = useState({
+    nome: "",
+    idade: "",
+    cargo: "",
+    cep: ""
+  });
+
   const [loading, setLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState("");
   const [cepLoading, setCepLoading] = useState(false);
   const [formSubmitted, setFormSubmitted] = useState(false);
+  const [successMessage, setSuccessMessage] = useState("");
 
+  // Função para validar campo específico
+  const validateField = (field, value) => {
+    switch (field) {
+      case 'nome':
+        if (!value.trim()) return "Nome é obrigatório";
+        if (value.trim().length < 3) return "Nome deve ter pelo menos 3 caracteres";
+        if (!/^[A-Za-záàâãéèêíïóôõöúçñÁÀÂÃÉÈÊÍÏÓÔÕÖÚÇÑ ]+$/.test(value)) 
+          return "Nome deve conter apenas letras";
+        return "";
+        
+      case 'idade':
+        if (!value) return "Idade é obrigatória";
+        const idade = parseInt(value);
+        if (isNaN(idade)) return "Idade deve ser um número";
+        if (idade < 18) return "Idade mínima é 18 anos";
+        if (idade > 120) return "Idade inválida";
+        return "";
+        
+      case 'cargo':
+        if (!value.trim()) return "Cargo é obrigatório";
+        if (value.trim().length < 2) return "Cargo deve ter pelo menos 2 caracteres";
+        return "";
+        
+      case 'cep':
+        if (!value) return "CEP é obrigatório";
+        if (value.length !== 8) return "CEP deve ter 8 dígitos";
+        if (!/^\d+$/.test(value)) return "CEP deve conter apenas números";
+        return "";
+        
+      default:
+        return "";
+    }
+  };
+
+  // Função para atualizar campo e validar em tempo real
   const updateFormField = (field, value) => {
     setFormData(prev => ({ ...prev, [field]: value }));
-    // Limpa a mensagem de erro quando o usuário começa a digitar
+    
+    // Validar campo e atualizar erro específico
+    const error = validateField(field, value);
+    setFieldErrors(prev => ({ ...prev, [field]: error }));
+    
+    // Limpa a mensagem de erro geral quando o usuário começa a digitar
     if (errorMessage) setErrorMessage("");
+  };
+
+  // Função para validar formulário completo
+  const validateForm = () => {
+    let isValid = true;
+    const newFieldErrors = {};
+    
+    // Validar cada campo
+    Object.keys(formData).forEach(field => {
+      if (field === 'logradouro' || field === 'bairro') return; // Estes são preenchidos automaticamente
+      
+      const error = validateField(field, formData[field]);
+      newFieldErrors[field] = error;
+      
+      if (error) isValid = false;
+    });
+    
+    setFieldErrors(newFieldErrors);
+    return isValid;
   };
 
   // Função para buscar o CEP utilizando a API
   async function handleSearchCep() {
-    if (formData.cep.length !== 8) {
-      setErrorMessage("CEP deve ter 8 caracteres");
+    // Validar CEP antes de buscar
+    const cepError = validateField('cep', formData.cep);
+    if (cepError) {
+      setFieldErrors(prev => ({ ...prev, cep: cepError }));
+      setErrorMessage(cepError);
       return;
     }
 
     setCepLoading(true);
     try {
       const data = await api.searchCep(formData.cep);
-      setFormData(prev => ({
-        ...prev,
-        logradouro: data.logradouro,
-        bairro: data.bairro
-      }));
-      setErrorMessage("");
+      if (!data || !data.logradouro) {
+        setErrorMessage("CEP não encontrado ou inválido");
+        setFieldErrors(prev => ({ ...prev, cep: "CEP não encontrado" }));
+      } else {
+        setFormData(prev => ({
+          ...prev,
+          logradouro: data.logradouro,
+          bairro: data.bairro
+        }));
+        setErrorMessage("");
+      }
     } catch (error) {
-      setErrorMessage("Não foi possível encontrar o CEP");
-      console.log(error);
+      console.log("Erro na busca do CEP:", error);
+      setErrorMessage(`Erro ao buscar CEP: ${error.message || "Falha na conexão"}`);
+      setFieldErrors(prev => ({ ...prev, cep: "Erro ao buscar CEP" }));
     } finally {
       setCepLoading(false);
     }
   }
 
-  // Função para registrar um novo usuário
+  // Formatação dos dados antes de enviar ao Firebase
+  const prepareDataForSubmission = () => {
+    return {
+      nome: formData.nome.trim(),
+      idade: parseInt(formData.idade),
+      cargo: formData.cargo.trim(),
+      cep: formData.cep,
+      logradouro: formData.logradouro,
+      bairro: formData.bairro,
+      createdAt: serverTimestamp() // Adiciona timestamp de criação
+    };
+  };
+
+  // Função para registrar um novo usuário DIRETAMENTE no Firebase
   async function handleRegister() {
     setFormSubmitted(true);
     
-    // Valida todos os campos
-    if (!formData.nome || !formData.idade || !formData.cargo || !formData.cep) {
-      setErrorMessage("Preencha todos os campos obrigatórios");
+    // Validar todos os campos
+    if (!validateForm()) {
+      setErrorMessage("Corrija os erros no formulário antes de continuar");
+      return;
+    }
+
+    // Verifica se todos os campos obrigatórios estão presentes
+    if (!formData.logradouro || !formData.bairro) {
+      setErrorMessage("É necessário buscar um CEP válido antes de cadastrar");
       return;
     }
 
     setLoading(true);
     try {
-      await api.registerUser(formData);
+      // Preparar dados para envio
+      const dataToSubmit = prepareDataForSubmission();
+      
+      // SALVAR DIRETAMENTE NO FIREBASE
+      // Referência à coleção 'usuarios' (ou o nome que você usa no Firebase)
+      const usersCollection = collection(db, "usuarios");
+      
+      // Adicionar documento à coleção
+      const docRef = await addDoc(usersCollection, dataToSubmit);
+      
+      console.log("Documento adicionado com ID: ", docRef.id);
       
       // Mostra mensagem de sucesso e reseta o formulário
+      setSuccessMessage("Usuário cadastrado com sucesso!");
       setFormData({
         nome: "",
         idade: "",
@@ -90,12 +199,21 @@ export function FormUsers({ navigation }) {
       
       // Mostra uma mensagem de sucesso temporária antes de navegar
       setTimeout(() => {
+        setSuccessMessage("");
         navigation.navigate("UsersList");
-      }, 1000);
+      }, 2000);
       
     } catch (err) {
-      setErrorMessage("Erro ao cadastrar usuário");
-      console.log(err);
+      console.log("Erro detalhado ao cadastrar no Firebase:", err);
+      
+      // Tratamento específico de erros do Firebase
+      if (err.code === 'permission-denied') {
+        setErrorMessage("Permissão negada. Verifique as regras do Firestore.");
+      } else if (err.code === 'unavailable') {
+        setErrorMessage("Serviço Firebase indisponível. Verifique sua conexão.");
+      } else {
+        setErrorMessage(`Erro ao cadastrar: ${err.message || "Erro desconhecido"}`);
+      }
     } finally {
       setLoading(false);
     }
@@ -103,17 +221,63 @@ export function FormUsers({ navigation }) {
 
   // Função para logout
   async function handleLogout() {
-    try {
-      await signOut(auth);
-      navigation.navigate('Login'); // Navega para tela de login após sair
-    } catch (error) {
-      console.log("Erro ao fazer logout:", error);
-    }
+    Alert.alert(
+      "Logout",
+      "Tem certeza que deseja sair?",
+      [
+        {
+          text: "Cancelar",
+          style: "cancel"
+        },
+        {
+          text: "Sair",
+          onPress: async () => {
+            try {
+              await signOut(auth);
+              navigation.navigate('Login');
+            } catch (error) {
+              console.log("Erro ao fazer logout:", error);
+              Alert.alert("Erro", "Não foi possível fazer logout.");
+            }
+          }
+        }
+      ]
+    );
   }
 
-  // Verifica se um campo está vazio e se já tentou submeter o form
-  const isFieldInvalid = (fieldName) => {
-    return formSubmitted && !formData[fieldName];
+  // Função para limpar o formulário
+  const handleClearForm = () => {
+    Alert.alert(
+      "Limpar formulário",
+      "Deseja limpar todos os campos do formulário?",
+      [
+        {
+          text: "Cancelar",
+          style: "cancel"
+        },
+        {
+          text: "Limpar",
+          onPress: () => {
+            setFormData({
+              nome: "",
+              idade: "",
+              cargo: "",
+              cep: "",
+              logradouro: "",
+              bairro: ""
+            });
+            setFieldErrors({
+              nome: "",
+              idade: "",
+              cargo: "",
+              cep: ""
+            });
+            setErrorMessage("");
+            setFormSubmitted(false);
+          }
+        }
+      ]
+    );
   };
 
   return (
@@ -143,19 +307,27 @@ export function FormUsers({ navigation }) {
               </View>
             ) : null}
             
+            {successMessage ? (
+              <View style={styles.successContainer}>
+                <MaterialIcons name="check-circle" size={20} color="#34C759" />
+                <Text style={styles.successMessage}>{successMessage}</Text>
+              </View>
+            ) : null}
+            
             <View style={styles.inputGroup}>
               <Text style={styles.label}>Nome completo <Text style={styles.required}>*</Text></Text>
               <TextInput
                 style={[
                   styles.input,
-                  isFieldInvalid('nome') && styles.inputError
+                  (formSubmitted && !formData.nome) || fieldErrors.nome ? styles.inputError : null
                 ]}
                 placeholder="Digite seu nome completo"
                 value={formData.nome}
                 onChangeText={(text) => updateFormField('nome', text)}
+                maxLength={100}
               />
-              {isFieldInvalid('nome') && (
-                <Text style={styles.fieldError}>Nome é obrigatório</Text>
+              {((formSubmitted && !formData.nome) || fieldErrors.nome) && (
+                <Text style={styles.fieldError}>{fieldErrors.nome || "Nome é obrigatório"}</Text>
               )}
             </View>
             
@@ -164,7 +336,7 @@ export function FormUsers({ navigation }) {
               <TextInput
                 style={[
                   styles.input,
-                  isFieldInvalid('idade') && styles.inputError
+                  (formSubmitted && !formData.idade) || fieldErrors.idade ? styles.inputError : null
                 ]}
                 placeholder="Digite sua idade"
                 value={formData.idade}
@@ -172,8 +344,8 @@ export function FormUsers({ navigation }) {
                 keyboardType="numeric"
                 maxLength={3}
               />
-              {isFieldInvalid('idade') && (
-                <Text style={styles.fieldError}>Idade é obrigatória</Text>
+              {((formSubmitted && !formData.idade) || fieldErrors.idade) && (
+                <Text style={styles.fieldError}>{fieldErrors.idade || "Idade é obrigatória"}</Text>
               )}
             </View>
             
@@ -182,14 +354,15 @@ export function FormUsers({ navigation }) {
               <TextInput
                 style={[
                   styles.input,
-                  isFieldInvalid('cargo') && styles.inputError
+                  (formSubmitted && !formData.cargo) || fieldErrors.cargo ? styles.inputError : null
                 ]}
                 placeholder="Digite seu cargo"
                 value={formData.cargo}
                 onChangeText={(text) => updateFormField('cargo', text)}
+                maxLength={50}
               />
-              {isFieldInvalid('cargo') && (
-                <Text style={styles.fieldError}>Cargo é obrigatório</Text>
+              {((formSubmitted && !formData.cargo) || fieldErrors.cargo) && (
+                <Text style={styles.fieldError}>{fieldErrors.cargo || "Cargo é obrigatório"}</Text>
               )}
             </View>
             
@@ -199,18 +372,21 @@ export function FormUsers({ navigation }) {
                 <TextInput
                   style={[
                     styles.cepInput,
-                    isFieldInvalid('cep') && styles.inputError
+                    (formSubmitted && !formData.cep) || fieldErrors.cep ? styles.inputError : null
                   ]}
                   placeholder="Digite apenas números"
                   value={formData.cep}
-                  onChangeText={(text) => updateFormField('cep', text)}
+                  onChangeText={(text) => updateFormField('cep', text.replace(/\D/g, ''))}
                   keyboardType="numeric"
                   maxLength={8}
                 />
                 <TouchableOpacity 
-                  style={styles.cepButton} 
+                  style={[
+                    styles.cepButton,
+                    (!formData.cep || formData.cep.length !== 8 || fieldErrors.cep) ? styles.buttonDisabled : null
+                  ]} 
                   onPress={handleSearchCep}
-                  disabled={cepLoading || formData.cep.length !== 8}
+                  disabled={cepLoading || !formData.cep || formData.cep.length !== 8 || !!fieldErrors.cep}
                 >
                   {cepLoading ? (
                     <ActivityIndicator size="small" color="#FFFFFF" />
@@ -219,8 +395,8 @@ export function FormUsers({ navigation }) {
                   )}
                 </TouchableOpacity>
               </View>
-              {isFieldInvalid('cep') && (
-                <Text style={styles.fieldError}>CEP é obrigatório</Text>
+              {((formSubmitted && !formData.cep) || fieldErrors.cep) && (
+                <Text style={styles.fieldError}>{fieldErrors.cep || "CEP é obrigatório"}</Text>
               )}
             </View>
             
@@ -246,20 +422,33 @@ export function FormUsers({ navigation }) {
               </>
             ) : null}
             
-            <TouchableOpacity 
-              style={styles.submitButton} 
-              onPress={handleRegister}
-              disabled={loading}
-            >
-              {loading ? (
-                <ActivityIndicator size="small" color="#FFFFFF" />
-              ) : (
-                <>
-                  <MaterialIcons name="person-add" size={20} color="#FFFFFF" style={styles.buttonIcon} />
-                  <Text style={styles.submitButtonText}>Cadastrar Usuário</Text>
-                </>
-              )}
-            </TouchableOpacity>
+            <View style={styles.buttonRow}>
+              <TouchableOpacity 
+                style={styles.clearButton} 
+                onPress={handleClearForm}
+              >
+                <MaterialIcons name="clear" size={20} color="#FFFFFF" style={styles.buttonIcon} />
+                <Text style={styles.clearButtonText}>Limpar</Text>
+              </TouchableOpacity>
+              
+              <TouchableOpacity 
+                style={[
+                  styles.submitButton,
+                  (loading || !formData.logradouro || !formData.bairro) ? styles.buttonDisabled : null
+                ]} 
+                onPress={handleRegister}
+                disabled={loading || !formData.logradouro || !formData.bairro}
+              >
+                {loading ? (
+                  <ActivityIndicator size="small" color="#FFFFFF" />
+                ) : (
+                  <>
+                    <MaterialIcons name="person-add" size={20} color="#FFFFFF" style={styles.buttonIcon} />
+                    <Text style={styles.submitButtonText}>Cadastrar Usuário</Text>
+                  </>
+                )}
+              </TouchableOpacity>
+            </View>
           </View>
           
           <TouchableOpacity 
@@ -331,6 +520,20 @@ const styles = StyleSheet.create({
     fontSize: 14,
     flex: 1,
   },
+  successContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#E3FFF1',
+    padding: 12,
+    borderRadius: 8,
+    marginBottom: 16,
+  },
+  successMessage: {
+    color: '#34C759',
+    marginLeft: 6,
+    fontSize: 14,
+    flex: 1,
+  },
   inputGroup: {
     marginBottom: 16,
   },
@@ -387,18 +590,41 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     paddingHorizontal: 16,
   },
+  buttonDisabled: {
+    backgroundColor: '#A0A0A0',
+    opacity: 0.7,
+  },
   cepButtonText: {
     color: '#FFFFFF',
     fontWeight: '500',
+  },
+  buttonRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    marginTop: 16,
+  },
+  clearButton: {
+    backgroundColor: '#8E8E93',
+    borderRadius: 8,
+    paddingVertical: 14,
+    flexDirection: 'row',
+    justifyContent: 'center',
+    alignItems: 'center',
+    flex: 0.48,
+  },
+  clearButtonText: {
+    color: '#FFFFFF',
+    fontSize: 16,
+    fontWeight: '600',
   },
   submitButton: {
     backgroundColor: '#34C759',
     borderRadius: 8,
     paddingVertical: 14,
-    marginTop: 16,
     flexDirection: 'row',
     justifyContent: 'center',
     alignItems: 'center',
+    flex: 0.48,
   },
   submitButtonText: {
     color: '#FFFFFF',
